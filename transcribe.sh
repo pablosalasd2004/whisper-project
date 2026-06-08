@@ -104,10 +104,13 @@ write_state "recording"
 python3 "$WHISPER_DIR/indicator.py" &
 echo $! > "$INDICATOR_PIDFILE"
 
-pw-record --channels=1 --rate=16000 --format=s16 "$TMPFILE" &
-echo $! > "$PIDFILE"
+# Resolve the default source explicitly so pw-record targets the right
+# device even if PipeWire is mid-reconfiguration (e.g. after a window
+# switch that released the mic from another app).
+DEFAULT_SOURCE=$(pactl info 2>/dev/null | awk '/Default Source:/{print $3}')
 
-# Give PipeWire time to wake the suspended device and route the stream.
-# Without this, pw-record may start writing silence while the device is
-# still powering on, causing the noise-floor calibration to read zero.
-sleep 0.4
+pw-record \
+    ${DEFAULT_SOURCE:+--target="$DEFAULT_SOURCE"} \
+    --channels=1 --rate=16000 --format=s16 \
+    "$TMPFILE" &
+echo $! > "$PIDFILE"
