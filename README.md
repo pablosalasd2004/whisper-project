@@ -138,38 +138,52 @@ Apply with `hyprctl reload`.
 
 ## Customization
 
-All behaviour is controlled by environment variables — no config files to edit.
+All behaviour is controlled by environment variables.
 
-### Model and paths
+> **Important for Hyprland users:** variables set in your shell profile (`.bashrc`, `fish/config.fish`, etc.) are **not** inherited by keybindings. Set them in your Hyprland config instead (see below).
 
-```bash
-export WHISPER_MODEL=ggml-large-v3-turbo.bin   # default: ggml-small.bin
-export WHISPER_DIR=/path/to/whisper             # default: ~/.whisper
-```
-
-### Speed vs. accuracy
+### Environment variables
 
 | Variable | Default | Notes |
 |----------|---------|-------|
+| `WHISPER_MODEL` | `ggml-small.bin` | Model filename under `whisper.cpp/models/` |
+| `WHISPER_LANG` | `auto` | Language code — **always set this** to avoid mis-detection (`en`, `es`, `fr` …) |
+| `WHISPER_BEAM` | `1` | `1` = greedy (fastest); `3-5` = beam search (more accurate) |
 | `WHISPER_THREADS` | `$(nproc)` | CPU threads for inference |
-| `WHISPER_BEAM` | `1` | `1` = greedy (fastest); `5` = beam search (more accurate) |
-| `WHISPER_LANG` | `auto` | Set to `en`, `es`, `fr` … to skip language detection (~0.5 s faster) |
+| `WHISPER_DIR` | `~/.whisper` | Root of the installation |
 
-Maximum speed (English-only setup):
+### Setting variables in Hyprland
 
-```bash
-export WHISPER_LANG=en
-export WHISPER_BEAM=1
+**Standard `.conf` format:**
+
+```ini
+env = WHISPER_MODEL, ggml-small.bin
+env = WHISPER_LANG, en
+env = WHISPER_BEAM, 3
 ```
 
-Maximum accuracy (slower):
+**Lua format** (omarchy / hyprland-lua setups):
 
-```bash
-export WHISPER_BEAM=5
-export WHISPER_MODEL=ggml-large-v3-turbo.bin
+```lua
+hl.env("WHISPER_MODEL", "ggml-small.bin")
+hl.env("WHISPER_LANG", "en")   -- change to your language
+hl.env("WHISPER_BEAM", "3")
 ```
 
-Add these exports to your shell profile (`~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`) to make them permanent.
+### Recommended settings by use case
+
+**Best speed** (English, greedy decoding):
+```lua
+hl.env("WHISPER_LANG", "en")
+hl.env("WHISPER_BEAM", "1")
+```
+
+**Best accuracy** (any language, larger model):
+```lua
+hl.env("WHISPER_MODEL", "ggml-large-v3-turbo.bin")
+hl.env("WHISPER_LANG", "es")   -- set your language
+hl.env("WHISPER_BEAM", "5")
+```
 
 ### HUD appearance
 
@@ -195,20 +209,6 @@ The HUD auto-calibrates its noise floor during the first 500 ms of every recordi
 pactl list sources short   # list available audio input sources
 ```
 
-## Running the tests
-
-```bash
-# Copy scripts to the path the tests expect
-mkdir -p /tmp/whisper-review
-cp ~/.whisper/transcribe.sh ~/.whisper/cancel.sh ~/.whisper/indicator.py /tmp/whisper-review/
-
-# Bash integration tests (no hardware required — uses mock binaries)
-bash ~/.whisper/tests/test_transcribe.sh
-
-# Python unit tests (no display required — GTK is mocked)
-python3 ~/.whisper/tests/test_indicator.py -v
-```
-
 ## Troubleshooting
 
 **HUD doesn't appear**
@@ -231,7 +231,7 @@ wtype --version   # confirm wtype is installed
 ```bash
 ls -lh ~/.whisper/whisper.cpp/build/bin/whisper-cli
 ```
-If missing, re-run the build step (step 4 above).
+If missing, re-run the build step (step 3 above).
 
 **Check logs**
 
