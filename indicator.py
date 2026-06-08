@@ -44,10 +44,9 @@ WAV_HEADER = 44   # bytes, standard RIFF WAV header
 
 # Audio analysis constants
 _SAMPLE_RATE   = 16000
-_CHUNK_SAMPLES = 3200          # 200 ms of audio — better FFT resolution
-_FREQ_MIN      = 85.0          # Hz, low fundamental of speech
-_FREQ_MAX      = 8000.0        # Hz, high speech content
-_CALIB_TICKS   = 10            # 10 × 50 ms = 500 ms calibration window
+_CHUNK_SAMPLES = 3200   # 200 ms of audio — better FFT resolution
+_FREQ_MIN      = 85.0   # Hz, low fundamental of speech
+_FREQ_MAX      = 8000.0 # Hz, high speech content
 
 # Map display bar index → FFT frequency band index.
 # Low-frequency bands (most speech energy) are placed in the center;
@@ -56,8 +55,9 @@ _BAR_FREQ_MAP = [15, 13, 11, 9, 7, 5, 3, 1, 0, 2, 4, 6, 8, 10, 12, 14]
 
 # Module-level audio state (readable by tests and external code)
 _audio_levels  = [0.0] * NUM_BARS   # current per-bar levels, 0..1
-_calib_buf     = []                  # RMS samples collected while calibrating
-_noise_floor   = None                # set after _CALIB_TICKS ticks
+# Noise floor starts at a conservative estimate and adapts continuously
+# during silence/pauses — avoids the inconsistency of a fixed startup window.
+_noise_floor   = 0.01
 
 
 def parse_color(h):
@@ -72,14 +72,15 @@ def _wav_levels():
     Read the last ~200 ms of the WAV file pw-record is writing.
 
     Returns a list of NUM_BARS floats in [0, 1]: one per log-spaced frequency
-    band.  The first _CALIB_TICKS calls measure ambient noise so the display
-    automatically adapts to the user's microphone sensitivity.
+    band.  The noise floor adapts continuously during silence so the display
+    stays consistent regardless of microphone sensitivity or PipeWire startup
+    timing.
 
     Also updates the module-level _audio_levels list so external code and
     tests can inspect the current state without holding a reference to the
     WhisperIndicator instance.
     """
-    global _audio_levels, _calib_buf, _noise_floor
+    global _audio_levels, _noise_floor
 
     try:
         with open(WAV_FILE, "rb") as f:
@@ -100,16 +101,13 @@ def _wav_levels():
 
     overall_rms = float(np.sqrt(np.mean(samples ** 2)))
 
-    # Calibration: accumulate ambient RMS during the first 500 ms of recording
-    if _noise_floor is None:
-        _calib_buf.append(overall_rms)
-        if len(_calib_buf) >= _CALIB_TICKS:
-            # 90th percentile is robust to a brief voice onset at the start
-            _noise_floor = float(np.percentile(_calib_buf, 90))
-        _audio_levels = [0.0] * NUM_BARS
-        return _audio_levels
+    # Adaptive noise floor: slow EMA that only updates when the signal is
+    # quiet (≤ 3× current floor).  This tracks ambient room noise and pauses
+    # between words but ignores voice peaks — so the floor never drifts up
+    # while the user is speaking.
+    if overall_rms < _noise_floor * 3:
+        _noise_floor = max(0.003, _noise_floor * 0.99 + overall_rms * 0.01)
 
-    # Adaptive gain: maps typical speech (~5× noise floor) to ~0.5 bar height
     gain = min(8.0, 0.5 / max(_noise_floor, 0.003))
 
     # Overall energy above the calibrated floor — drives all bars together
@@ -139,10 +137,9 @@ def _wav_levels():
 
 
 def _reset_calibration():
-    """Reset auto-calibration state (called when a new recording starts)."""
-    global _calib_buf, _noise_floor, _audio_levels
-    _calib_buf    = []
-    _noise_floor  = None
+    """Reset audio state for a new recording."""
+    global _noise_floor, _audio_levels
+    _noise_floor  = 0.01
     _audio_levels = [0.0] * NUM_BARS
 
 
