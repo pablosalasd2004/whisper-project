@@ -43,8 +43,16 @@ cmake --build build --config Release -j$(nproc)
 
 ### 2. Download a model
 
+The recommended default is `small` — a good balance of speed and accuracy for most hardware:
+
 ```bash
 cd ~/.whisper/whisper.cpp
+bash models/download-ggml-model.sh small
+```
+
+For higher transcription quality (requires ~1.6 GB RAM and a reasonably fast CPU or GPU):
+
+```bash
 bash models/download-ggml-model.sh large-v3-turbo
 ```
 
@@ -52,10 +60,12 @@ bash models/download-ggml-model.sh large-v3-turbo
 |-------|------|-------|---------|
 | `tiny` | 75 MB | Very fast | Basic |
 | `base` | 142 MB | Fast | Good |
-| `small` | 466 MB | Medium | Good |
+| `small` | 466 MB | Medium | Good  ← **recommended default** |
 | `medium` | 1.5 GB | Slow | Very good |
 | `large-v3-turbo` | 1.6 GB | Medium | Excellent |
 | `large-v3` | 3.1 GB | Slow | Excellent |
+
+You can override the model at runtime with the `WHISPER_MODEL` environment variable (see [Customization](#customization)).
 
 ### 3. Install Python dependencies
 
@@ -77,15 +87,25 @@ The scripts expect to live in `~/.whisper/`.
 
 ### 5. Configure the keybinding in Hyprland
 
-Add to `~/.config/hypr/bindings.lua`:
+**Standard `.conf` format** (works in any Hyprland setup):
+
+```
+bind = SUPER, R, exec, bash ~/.whisper/transcribe.sh
+```
+
+Add a window rule so the HUD floats:
+
+```
+windowrulev2 = float, title:^(whisper-indicator)$
+windowrulev2 = size 220 44, title:^(whisper-indicator)$
+windowrulev2 = center, title:^(whisper-indicator)$
+```
+
+**Lua format** (omarchy / hyprland-lua setups):
 
 ```lua
 hl.bind("SUPER + R", hl.dsp.exec_cmd("bash " .. os.getenv("HOME") .. "/.whisper/transcribe.sh"), { description = "Whisper: record/transcribe voice" })
 ```
-
-Apply with `hyprctl reload`.
-
-Also add a window rule so the HUD floats at the bottom center. In `~/.config/hypr/hyprland.lua`:
 
 ```lua
 o.window("whisper-indicator", {
@@ -93,6 +113,8 @@ o.window("whisper-indicator", {
   move = { "(monitor_w/2-window_w/2)", "(monitor_h-window_h-50)" },
 })
 ```
+
+Apply with `hyprctl reload`.
 
 ## Files
 
@@ -106,10 +128,22 @@ o.window("whisper-indicator", {
 
 ### Change the model
 
-Edit the `MODEL` variable in `transcribe.sh`:
+Set the `WHISPER_MODEL` environment variable to use a different model without editing the script:
 
 ```bash
-MODEL="$HOME/.whisper/whisper.cpp/models/ggml-large-v3-turbo.bin"
+WHISPER_MODEL=ggml-large-v3-turbo.bin bash ~/.whisper/transcribe.sh
+```
+
+Or export it in your shell profile to make it permanent:
+
+```bash
+export WHISPER_MODEL=ggml-large-v3-turbo.bin
+```
+
+You can also override the whisper installation directory:
+
+```bash
+export WHISPER_DIR=/path/to/your/whisper.cpp/installation
 ```
 
 ### Change the HUD appearance
@@ -126,7 +160,7 @@ Edit the constants at the top of `indicator.py`:
 | `WINDOW_WIDTH` | `220` | Window width in px |
 | `WINDOW_HEIGHT` | `44` | Window height in px |
 
-If you change `WINDOW_WIDTH` or `WINDOW_HEIGHT`, update the matching `size` in your Hyprland config too.
+If you change `WINDOW_WIDTH` or `WINDOW_HEIGHT`, update the matching `size` in your Hyprland window rule too.
 
 ## Troubleshooting
 
@@ -147,11 +181,19 @@ python3 -c "import sounddevice; print('OK')"
 ls -lh ~/.whisper/whisper.cpp/models/
 ```
 
+**Check logs**
+
+All whisper-cli output and dependency errors are written to `/tmp/whisper.log`:
+
+```bash
+cat /tmp/whisper.log
+```
+
 **Clean up stuck processes**
 ```bash
 kill $(cat /tmp/whisper-recording.pid 2>/dev/null) 2>/dev/null
 kill $(cat /tmp/whisper-indicator.pid 2>/dev/null) 2>/dev/null
-rm -f /tmp/whisper-recording.{pid,wav} /tmp/whisper-state /tmp/whisper-indicator.pid
+rm -f /tmp/whisper-recording.{pid,wav} /tmp/whisper-state /tmp/whisper-indicator.pid /tmp/whisper.log
 ```
 
 ## License

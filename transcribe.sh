@@ -1,13 +1,17 @@
 #!/bin/bash
 # Voice-to-text toggle: first press starts recording, second press transcribes.
-# Uses whisper.cpp with Vulkan backend.
+# Uses whisper.cpp (build with Vulkan/CUDA/CPU support at compile time).
 
-WHISPER_BIN="$HOME/.whisper/whisper.cpp/build/bin/whisper-cli"
-MODEL="$HOME/.whisper/whisper.cpp/models/ggml-large-v3.bin"
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.whisper}"
+WHISPER_MODEL="${WHISPER_MODEL:-ggml-small.bin}"
+
+WHISPER_BIN="$WHISPER_DIR/whisper.cpp/build/bin/whisper-cli"
+MODEL="$WHISPER_DIR/whisper.cpp/models/$WHISPER_MODEL"
 TMPFILE="/tmp/whisper-recording.wav"
-PIDFILE="/tmp/whisper-recording.pid"
-STATEFILE="/tmp/whisper-state"
+PIDFILE="${WHISPER_PIDFILE:-/tmp/whisper-recording.pid}"
+STATEFILE="${WHISPER_STATEFILE:-/tmp/whisper-state}"
 INDICATOR_PIDFILE="/tmp/whisper-indicator.pid"
+LOGFILE="/tmp/whisper.log"
 
 write_state() { echo "$1" > "$STATEFILE"; }
 
@@ -33,7 +37,7 @@ if [[ -f "$PIDFILE" ]]; then
         -f "$TMPFILE" \
         -l auto \
         --no-timestamps \
-        2>/dev/null \
+        2>>"$LOGFILE" \
         | sed '/^\[/d' \
         | sed 's/^[[:space:]]*//' \
         | tr -s '\n' ' ' \
@@ -51,9 +55,38 @@ if [[ -f "$PIDFILE" ]]; then
 fi
 
 # ── START: begin recording ───────────────────────────────────────────────────
+
+check_deps() {
+    local ok=1
+
+    if ! command -v whisper-cli &>/dev/null && [[ ! -x "$WHISPER_BIN" ]]; then
+        echo "$(date): ERROR: whisper-cli not found (checked PATH and $WHISPER_BIN)" >> "$LOGFILE"
+        ok=0
+    fi
+
+    if [[ ! -f "$MODEL" ]]; then
+        echo "$(date): ERROR: model not found: $MODEL" >> "$LOGFILE"
+        ok=0
+    fi
+
+    for cmd in pw-record wl-copy wtype python3; do
+        if ! command -v "$cmd" &>/dev/null; then
+            echo "$(date): ERROR: missing dependency: $cmd" >> "$LOGFILE"
+            ok=0
+        fi
+    done
+
+    echo "$ok"
+}
+
+if [[ "$(check_deps)" != "1" ]]; then
+    write_state "done"
+    exit 1
+fi
+
 write_state "recording"
 
-python3 "$HOME/.whisper/indicator.py" &
+python3 "$WHISPER_DIR/indicator.py" &
 echo $! > "$INDICATOR_PIDFILE"
 
 pw-record --channels=1 --rate=16000 --format=s16 "$TMPFILE" &

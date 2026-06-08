@@ -14,11 +14,10 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib, Gdk
 
+import cairo
 import threading
 import math
-import random
 import os
-import signal
 import sys
 
 # ---------------------------------------------------------------------------
@@ -27,13 +26,11 @@ import sys
 BG_COLOR              = "#0a1220"
 ACCENT_RECORDING      = "#78dce8"   # cyan
 ACCENT_TRANSCRIBING   = "#f2c063"   # amarillo
-FG_COLOR              = "#f0f2f5"
-DIM_COLOR             = "#555c65"
 
 NUM_BARS              = 16
 MAX_BAR_HEIGHT        = 28          # px, altura máxima de las barras
 MIN_BAR_HEIGHT        = 3           # px, altura mínima de las barras
-BAR_GAP               = 3           # px, separación entre barras
+BAR_GAP               = 3          # px, separación entre barras
 UPDATE_INTERVAL_MS    = 50          # ms entre frames de animación
 
 WINDOW_WIDTH          = 220
@@ -41,16 +38,10 @@ WINDOW_HEIGHT         = 44
 # ---------------------------------------------------------------------------
 
 STATE_FILE    = "/tmp/whisper-state"
-REC_PID_FILE  = "/tmp/whisper-recording.pid"
-REC_WAV_FILE  = "/tmp/whisper-recording.wav"
 
-def hex_to_rgb(h):
+def parse_color(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
-
-def _parse_color(h):
-    r, g, b = hex_to_rgb(h)
-    return (r, g, b)
 
 # ── Audio capture ────────────────────────────────────────────────────────────
 _audio_levels = [0.0] * NUM_BARS   # shared between audio thread and draw
@@ -93,7 +84,7 @@ def _start_audio_capture():
 # ── GTK4 Application ─────────────────────────────────────────────────────────
 class WhisperIndicator(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="whisper-indicator")
+        super().__init__(application_id="io.github.pablosalasd2004.WhisperHUD")
         self._state        = "recording"
         self._bars         = [MIN_BAR_HEIGHT / MAX_BAR_HEIGHT] * NUM_BARS
         self._phase        = 0.0   # para animación suave en modo transcribing
@@ -142,23 +133,22 @@ class WhisperIndicator(Gtk.Application):
 
     # -- drawing --
     def _on_draw(self, da, cr, w, h, user_data):
-        import cairo as _cairo
         # Clear to transparent first
-        cr.set_operator(_cairo.OPERATOR_SOURCE)
+        cr.set_operator(cairo.OPERATOR_SOURCE)
         cr.set_source_rgba(0, 0, 0, 0)
         cr.paint()
-        cr.set_operator(_cairo.OPERATOR_OVER)
+        cr.set_operator(cairo.OPERATOR_OVER)
 
         # Solid background — Hyprland clipea las esquinas
-        r, g, b = _parse_color(BG_COLOR)
+        r, g, b = parse_color(BG_COLOR)
         cr.set_source_rgb(r, g, b)
         cr.paint()
 
         # Color de acento según estado
         if self._state == "transcribing":
-            accent = _parse_color(ACCENT_TRANSCRIBING)
+            accent = parse_color(ACCENT_TRANSCRIBING)
         else:
-            accent = _parse_color(ACCENT_RECORDING)
+            accent = parse_color(ACCENT_RECORDING)
 
         # Barras del ecualizador — centradas horizontalmente
         PAD = 14  # padding a cada lado
@@ -234,8 +224,10 @@ class WhisperIndicator(Gtk.Application):
 
     def _cancel(self):
         import subprocess
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        cancel_script = os.path.join(script_dir, "cancel.sh")
         subprocess.Popen(
-            ["bash", os.path.expanduser("~/.whisper/cancel.sh")],
+            ["bash", cancel_script],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
