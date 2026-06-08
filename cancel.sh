@@ -1,17 +1,17 @@
 #!/bin/bash
-# Cancela la grabación de Whisper desde cualquier contexto
+# Cancel an active Whisper recording from any context (e.g. ESC key in the HUD).
 
 PIDFILE="${WHISPER_PIDFILE:-/tmp/whisper-recording.pid}"
 STATEFILE="${WHISPER_STATEFILE:-/tmp/whisper-state}"
 
-# Señalar al indicator que cierre
+# Signal the indicator to close
 echo "cancel" > "$STATEFILE"
 
-# Matar pw-record
+# Stop pw-record
 if [[ -f "$PIDFILE" ]]; then
     kill "$(cat "$PIDFILE")" 2>/dev/null
     rm -f "$PIDFILE"
 fi
 
-# Limpiar archivos temporales
+# Remove temp audio file
 rm -f /tmp/whisper-recording.wav

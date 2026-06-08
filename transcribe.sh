@@ -5,12 +5,25 @@
 WHISPER_DIR="${WHISPER_DIR:-$HOME/.whisper}"
 WHISPER_MODEL="${WHISPER_MODEL:-ggml-small.bin}"
 
-WHISPER_BIN="$WHISPER_DIR/whisper.cpp/build/bin/whisper-cli"
+# Speed tuning — override any of these in your shell profile or keybind
+WHISPER_THREADS="${WHISPER_THREADS:-$(nproc)}"  # CPU threads; defaults to all cores
+WHISPER_BEAM="${WHISPER_BEAM:-1}"               # 1 = greedy (fastest); 5 = beam search (more accurate)
+WHISPER_LANG="${WHISPER_LANG:-auto}"            # set your language code (e.g. "en") to skip detection
+
+# Resolve whisper-cli: prefer the local build, fall back to system PATH
+_DEFAULT_BIN="$WHISPER_DIR/whisper.cpp/build/bin/whisper-cli"
+if [[ -x "$_DEFAULT_BIN" ]]; then
+    WHISPER_BIN="$_DEFAULT_BIN"
+elif command -v whisper-cli &>/dev/null; then
+    WHISPER_BIN="$(command -v whisper-cli)"
+else
+    WHISPER_BIN="$_DEFAULT_BIN"   # will fail dep check below with a clear error
+fi
 MODEL="$WHISPER_DIR/whisper.cpp/models/$WHISPER_MODEL"
 TMPFILE="/tmp/whisper-recording.wav"
 PIDFILE="${WHISPER_PIDFILE:-/tmp/whisper-recording.pid}"
 STATEFILE="${WHISPER_STATEFILE:-/tmp/whisper-state}"
-INDICATOR_PIDFILE="/tmp/whisper-indicator.pid"
+INDICATOR_PIDFILE="${WHISPER_INDICATOR_PIDFILE:-/tmp/whisper-indicator.pid}"
 LOGFILE="/tmp/whisper.log"
 
 write_state() { echo "$1" > "$STATEFILE"; }
@@ -35,7 +48,9 @@ if [[ -f "$PIDFILE" ]]; then
     RESULT=$("$WHISPER_BIN" \
         -m "$MODEL" \
         -f "$TMPFILE" \
-        -l auto \
+        -l "$WHISPER_LANG" \
+        -t "$WHISPER_THREADS" \
+        --beam-size "$WHISPER_BEAM" \
         --no-timestamps \
         2>>"$LOGFILE" \
         | sed '/^\[/d' \
@@ -59,8 +74,8 @@ fi
 check_deps() {
     local ok=1
 
-    if ! command -v whisper-cli &>/dev/null && [[ ! -x "$WHISPER_BIN" ]]; then
-        echo "$(date): ERROR: whisper-cli not found (checked PATH and $WHISPER_BIN)" >> "$LOGFILE"
+    if [[ ! -x "$WHISPER_BIN" ]]; then
+        echo "$(date): ERROR: whisper-cli not found (checked PATH and $_DEFAULT_BIN)" >> "$LOGFILE"
         ok=0
     fi
 

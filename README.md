@@ -2,7 +2,7 @@
 
 A voice-to-text tool for **Hyprland / Wayland** desktops. Press a keybinding to start recording, press it again to transcribe — the resulting text is typed directly into the focused window and copied to the clipboard.
 
-Transcription runs locally via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (no API, no cloud, no data leaves your machine).
+Transcription runs locally via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — no API key, no cloud, no data leaves your machine.
 
 ## How it works
 
@@ -10,7 +10,7 @@ Transcription runs locally via [whisper.cpp](https://github.com/ggerganov/whispe
 SUPER+R (first press)
   └─► transcribe.sh
         ├─ starts pw-record  →  records audio to /tmp/whisper-recording.wav
-        └─ launches indicator.py  →  GTK4 floating HUD with animated bars (cyan)
+        └─ launches indicator.py  →  GTK4 floating HUD with animated equalizer (cyan)
 
 SUPER+R (second press)
   └─► transcribe.sh
@@ -24,93 +24,109 @@ Press **ESC** while the HUD is visible to cancel recording without transcribing.
 
 ## Requirements
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) compiled with `whisper-cli` binary
-- PipeWire (`pw-record`)
-- `wl-copy` (package `wl-clipboard`)
-- `wtype`
-- Python 3 packages: `PyGObject` (GTK4), `sounddevice`, `numpy`, `pycairo`
+**System packages:**
+
+| Package | Arch / CachyOS / Manjaro | Purpose |
+|---------|--------------------------|---------|
+| PipeWire | `pipewire` (usually pre-installed) | Audio recording |
+| wl-clipboard | `wl-clipboard` | Copy result to clipboard |
+| wtype | `wtype` | Type result into focused window |
+| Python 3 | `python` | HUD indicator |
+| PyGObject | `python-gobject` | GTK4 bindings |
+| NumPy | `python-numpy` | Audio FFT analysis |
+| PyCairo | `python-cairo` | Drawing the HUD |
+| CMake + GCC | `cmake base-devel` | Build whisper.cpp |
+
+**Optional (for GPU acceleration):**
+
+| Package | Purpose |
+|---------|---------|
+| `vulkan-headers vulkan-icd-loader` | Vulkan GPU support |
+| `spirv-headers` | Required when building with Vulkan |
 
 ## Installation
 
-### 1. Build whisper.cpp
+### 1. Clone this repository
+
+```bash
+git clone https://github.com/pablosalasd2004/whisper-project ~/.whisper
+```
+
+> The scripts must live in `~/.whisper/`. All paths default to this location.
+
+### 2. Install system dependencies
+
+```bash
+# Arch Linux / CachyOS / Manjaro
+sudo pacman -S python-gobject python-numpy python-cairo wl-clipboard wtype cmake base-devel
+
+# For Vulkan GPU support (recommended if you have a dedicated/integrated GPU)
+sudo pacman -S vulkan-headers vulkan-icd-loader spirv-headers
+```
+
+### 3. Install Python dependencies
+
+```bash
+pip install -r ~/.whisper/requirements.txt
+# or: pip install PyGObject numpy pycairo
+```
+
+### 4. Build whisper.cpp
 
 ```bash
 git clone https://github.com/ggerganov/whisper.cpp ~/.whisper/whisper.cpp
 cd ~/.whisper/whisper.cpp
-cmake -B build -DGGML_VULKAN=1   # remove -DGGML_VULKAN=1 if you don't have a Vulkan GPU
+
+# With Vulkan GPU acceleration (faster on most hardware with a GPU):
+cmake -B build -DGGML_VULKAN=1
+# Without GPU (CPU only):
+cmake -B build
+
 cmake --build build --config Release -j$(nproc)
 ```
 
-### 2. Download a model
-
-The recommended default is `small` — a good balance of speed and accuracy for most hardware:
+### 5. Download a model
 
 ```bash
 cd ~/.whisper/whisper.cpp
 bash models/download-ggml-model.sh small
 ```
 
-For higher transcription quality (requires ~1.6 GB RAM and a reasonably fast CPU or GPU):
-
-```bash
-bash models/download-ggml-model.sh large-v3-turbo
-```
-
 | Model | Size | Speed | Quality |
 |-------|------|-------|---------|
 | `tiny` | 75 MB | Very fast | Basic |
 | `base` | 142 MB | Fast | Good |
-| `small` | 466 MB | Medium | Good  ← **recommended default** |
+| `small` | 466 MB | Medium | Good ← **recommended** |
 | `medium` | 1.5 GB | Slow | Very good |
 | `large-v3-turbo` | 1.6 GB | Medium | Excellent |
 | `large-v3` | 3.1 GB | Slow | Excellent |
 
-You can override the model at runtime with the `WHISPER_MODEL` environment variable (see [Customization](#customization)).
-
-### 3. Install Python dependencies
-
-```bash
-# Arch Linux / CachyOS / Manjaro
-sudo pacman -S python-gobject python-sounddevice python-numpy python-cairo
-
-# pip
-pip install PyGObject sounddevice numpy pycairo
-```
-
-### 4. Place the scripts
-
-```bash
-git clone https://github.com/pablosalasd2004/whisper-project ~/.whisper
-```
-
-The scripts expect to live in `~/.whisper/`.
-
-### 5. Configure the keybinding in Hyprland
+### 6. Configure the keybinding in Hyprland
 
 **Standard `.conf` format** (works in any Hyprland setup):
 
-```
+```ini
 bind = SUPER, R, exec, bash ~/.whisper/transcribe.sh
-```
 
-Add a window rule so the HUD floats:
-
-```
-windowrulev2 = float, title:^(whisper-indicator)$
+windowrulev2 = float,      title:^(whisper-indicator)$
+windowrulev2 = pin,        title:^(whisper-indicator)$
+windowrulev2 = noborder,   title:^(whisper-indicator)$
 windowrulev2 = size 220 44, title:^(whisper-indicator)$
-windowrulev2 = center, title:^(whisper-indicator)$
+windowrulev2 = center,     title:^(whisper-indicator)$
 ```
 
 **Lua format** (omarchy / hyprland-lua setups):
 
 ```lua
 hl.bind("SUPER + R", hl.dsp.exec_cmd("bash " .. os.getenv("HOME") .. "/.whisper/transcribe.sh"), { description = "Whisper: record/transcribe voice" })
-```
 
-```lua
-o.window("whisper-indicator", {
-  size = { 220, 44 },
-  move = { "(monitor_w/2-window_w/2)", "(monitor_h-window_h-50)" },
+o.window({ title = "whisper-indicator" }, {
+  float      = true,
+  pin        = true,
+  border_size = 0,
+  opacity    = "1 1",
+  size       = { 220, 44 },
+  move       = { "(monitor_w/2-window_w/2)", "(monitor_h-window_h-50)" },
 })
 ```
 
@@ -122,39 +138,52 @@ Apply with `hyprctl reload`.
 |------|-------------|
 | `transcribe.sh` | Main toggle script: start recording → transcribe |
 | `indicator.py` | GTK4 floating HUD with animated equalizer |
-| `cancel.sh` | Cancels active recording and cleans up temp files |
+| `cancel.sh` | Cancels active recording (also called by ESC in the HUD) |
 
 ## Customization
 
-### Change the model
+All behaviour is controlled by environment variables — no config files to edit.
 
-Set the `WHISPER_MODEL` environment variable to use a different model without editing the script:
+### Model and paths
 
 ```bash
-WHISPER_MODEL=ggml-large-v3-turbo.bin bash ~/.whisper/transcribe.sh
+export WHISPER_MODEL=ggml-large-v3-turbo.bin   # default: ggml-small.bin
+export WHISPER_DIR=/path/to/whisper             # default: ~/.whisper
 ```
 
-Or export it in your shell profile to make it permanent:
+### Speed vs. accuracy
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `WHISPER_THREADS` | `$(nproc)` | CPU threads for inference |
+| `WHISPER_BEAM` | `1` | `1` = greedy (fastest); `5` = beam search (more accurate) |
+| `WHISPER_LANG` | `auto` | Set to `en`, `es`, `fr` … to skip language detection (~0.5 s faster) |
+
+Maximum speed (English-only setup):
 
 ```bash
+export WHISPER_LANG=en
+export WHISPER_BEAM=1
+```
+
+Maximum accuracy (slower):
+
+```bash
+export WHISPER_BEAM=5
 export WHISPER_MODEL=ggml-large-v3-turbo.bin
 ```
 
-You can also override the whisper installation directory:
+Add these exports to your shell profile (`~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`) to make them permanent.
 
-```bash
-export WHISPER_DIR=/path/to/your/whisper.cpp/installation
-```
-
-### Change the HUD appearance
+### HUD appearance
 
 Edit the constants at the top of `indicator.py`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BG_COLOR` | `#0a1220` | Background color |
-| `ACCENT_RECORDING` | `#78dce8` | Bar color while recording |
-| `ACCENT_TRANSCRIBING` | `#f2c063` | Bar color while transcribing |
+| `BG_COLOR` | `#0a1220` | Background colour |
+| `ACCENT_RECORDING` | `#78dce8` | Bar colour while recording |
+| `ACCENT_TRANSCRIBING` | `#f2c063` | Bar colour while transcribing |
 | `NUM_BARS` | `16` | Number of equalizer bars |
 | `MAX_BAR_HEIGHT` | `28` | Max bar height in px |
 | `WINDOW_WIDTH` | `220` | Window width in px |
@@ -162,28 +191,55 @@ Edit the constants at the top of `indicator.py`:
 
 If you change `WINDOW_WIDTH` or `WINDOW_HEIGHT`, update the matching `size` in your Hyprland window rule too.
 
+### Audio sensitivity
+
+The HUD auto-calibrates its noise floor during the first 500 ms of every recording, so it adapts automatically to any microphone without manual tuning. If `pw-record` is picking up the wrong input device:
+
+```bash
+pactl list sources short   # list available audio input sources
+```
+
+## Running the tests
+
+```bash
+# Copy scripts to the path the tests expect
+mkdir -p /tmp/whisper-review
+cp ~/.whisper/transcribe.sh ~/.whisper/cancel.sh ~/.whisper/indicator.py /tmp/whisper-review/
+
+# Bash integration tests (no hardware required — uses mock binaries)
+bash ~/.whisper/tests/test_transcribe.sh
+
+# Python unit tests (no display required — GTK is mocked)
+python3 ~/.whisper/tests/test_indicator.py -v
+```
+
 ## Troubleshooting
 
 **HUD doesn't appear**
 ```bash
-python3 -c "import gi; gi.require_version('Gtk', '4.0'); from gi.repository import Gtk; print('OK')"
+python3 -c "import gi; gi.require_version('Gtk', '4.0'); from gi.repository import Gtk; print('GTK4 OK')"
 ```
 
 **Bars don't animate**
 ```bash
-python3 -c "import sounddevice; print('OK')"
-# If it fails: sudo pacman -S python-sounddevice
+python3 -c "import numpy; print('numpy OK')"
+# If it fails: sudo pacman -S python-numpy
 ```
 
-**whisper-cli produces no output**
+**No text is typed after transcription**
 ```bash
-~/.whisper/whisper.cpp/build/bin/whisper-cli --help
-ls -lh ~/.whisper/whisper.cpp/models/
+wtype --version   # confirm wtype is installed
 ```
+
+**whisper-cli not found**
+```bash
+ls -lh ~/.whisper/whisper.cpp/build/bin/whisper-cli
+```
+If missing, re-run the build step (step 4 above).
 
 **Check logs**
 
-All whisper-cli output and dependency errors are written to `/tmp/whisper.log`:
+All whisper-cli output and dependency errors go to `/tmp/whisper.log`:
 
 ```bash
 cat /tmp/whisper.log

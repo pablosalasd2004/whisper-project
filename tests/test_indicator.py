@@ -9,6 +9,8 @@ mocked via sys.modules before the module under test is imported.
 import sys
 import types
 import unittest
+import struct
+import math
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +161,89 @@ class TestConstants(unittest.TestCase):
             int(color[1:], 16)
 
     def test_audio_levels_length(self):
+        """_audio_levels is a module-level list with one entry per bar."""
         self.assertEqual(len(indicator._audio_levels), indicator.NUM_BARS)
+
+
+class TestWavLevels(unittest.TestCase):
+    """Tests for _wav_levels() using a real temporary WAV file."""
+
+    def _write_wav(self, path, samples_s16):
+        """Write a minimal RIFF WAV (mono, 16 kHz, s16-LE)."""
+        data = struct.pack(f"<{len(samples_s16)}h", *samples_s16)
+        with open(path, "wb") as f:
+            f.write(b"RIFF")
+            f.write(struct.pack("<I", 36 + len(data)))
+            f.write(b"WAVE")
+            f.write(b"fmt ")
+            f.write(struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16))
+            f.write(b"data")
+            f.write(struct.pack("<I", len(data)))
+            f.write(data)
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        self._orig_wav = indicator.WAV_FILE
+        indicator.WAV_FILE = self._tmp.name
+        indicator._reset_calibration()
+
+    def tearDown(self):
+        import os
+        indicator.WAV_FILE = self._orig_wav
+        indicator._reset_calibration()
+        try:
+            os.unlink(self._tmp.name)
+        except OSError:
+            pass
+
+    def test_returns_correct_length(self):
+        """_wav_levels() always returns a list of length NUM_BARS."""
+        # Write enough silence to pass the header check
+        silence = [0] * 3200
+        self._write_wav(self._tmp.name, silence)
+        result = indicator._wav_levels()
+        self.assertEqual(len(result), indicator.NUM_BARS)
+
+    def test_all_values_in_range(self):
+        """Every returned level must be in [0, 1]."""
+        import math
+        # 200 ms of a 440 Hz tone at half amplitude
+        n = 3200
+        tone = [int(16000 * math.sin(2 * math.pi * 440 * i / 16000)) for i in range(n)]
+        self._write_wav(self._tmp.name, tone)
+        # Run enough ticks to complete calibration
+        for _ in range(indicator._CALIB_TICKS + 1):
+            result = indicator._wav_levels()
+        for v in result:
+            self.assertGreaterEqual(v, 0.0)
+            self.assertLessEqual(v, 1.0)
+
+    def test_silence_produces_near_zero(self):
+        """Pure silence after calibration should yield near-zero levels."""
+        tiny_noise = [1] * 3200   # effectively silent
+        self._write_wav(self._tmp.name, tiny_noise)
+        # Calibrate on silence
+        for _ in range(indicator._CALIB_TICKS + 1):
+            result = indicator._wav_levels()
+        self.assertTrue(all(v < 0.1 for v in result),
+                        f"Expected near-zero levels, got: {result}")
+
+    def test_audio_levels_module_var_updated(self):
+        """_audio_levels module variable must be updated after calibration."""
+        silence = [0] * 3200
+        self._write_wav(self._tmp.name, silence)
+        for _ in range(indicator._CALIB_TICKS + 1):
+            indicator._wav_levels()
+        self.assertEqual(len(indicator._audio_levels), indicator.NUM_BARS)
+
+    def test_missing_file_returns_zeros(self):
+        """_wav_levels() must not raise when the WAV file doesn't exist."""
+        indicator.WAV_FILE = "/tmp/does_not_exist_whisper_test.wav"
+        indicator._reset_calibration()
+        result = indicator._wav_levels()
+        self.assertEqual(result, [0.0] * indicator.NUM_BARS)
+        indicator.WAV_FILE = self._tmp.name
 
 
 if __name__ == "__main__":

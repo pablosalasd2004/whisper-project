@@ -4,10 +4,10 @@ Whisper HUD Indicator — GTK4 floating window
 Shows recording/transcribing state with an animated equalizer.
 
 States (via /tmp/whisper-state):
-  recording    → cyan bars animadas con audio real
-  transcribing → amarillo, barras estáticas bajas
-  done         → cierra la ventana
-  cancel       → cierra la ventana
+  recording    → cyan bars animated with real per-band audio levels
+  transcribing → yellow, low idle animation
+  done         → closes the window
+  cancel       → closes the window
 """
 
 import gi
@@ -17,21 +17,22 @@ from gi.repository import Gtk, GLib, Gdk
 import cairo
 import math
 import os
-import struct
 import sys
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
-# Personalización del diseño
+# Appearance
 # ---------------------------------------------------------------------------
 BG_COLOR              = "#0a1220"
 ACCENT_RECORDING      = "#78dce8"   # cyan
-ACCENT_TRANSCRIBING   = "#f2c063"   # amarillo
+ACCENT_TRANSCRIBING   = "#f2c063"   # yellow
 
 NUM_BARS              = 16
-MAX_BAR_HEIGHT        = 28          # px, altura máxima de las barras
-MIN_BAR_HEIGHT        = 3           # px, altura mínima de las barras
-BAR_GAP               = 3          # px, separación entre barras
-UPDATE_INTERVAL_MS    = 50          # ms entre frames de animación
+MAX_BAR_HEIGHT        = 28          # px
+MIN_BAR_HEIGHT        = 3           # px
+BAR_GAP               = 3          # px
+UPDATE_INTERVAL_MS    = 50
 
 WINDOW_WIDTH          = 220
 WINDOW_HEIGHT         = 44
@@ -41,44 +42,119 @@ STATE_FILE = "/tmp/whisper-state"
 WAV_FILE   = "/tmp/whisper-recording.wav"
 WAV_HEADER = 44   # bytes, standard RIFF WAV header
 
+# Audio analysis constants
+_SAMPLE_RATE   = 16000
+_CHUNK_SAMPLES = 3200          # 200 ms of audio — better FFT resolution
+_FREQ_MIN      = 85.0          # Hz, low fundamental of speech
+_FREQ_MAX      = 8000.0        # Hz, high speech content
+_CALIB_TICKS   = 10            # 10 × 50 ms = 500 ms calibration window
+
+# Map display bar index → FFT frequency band index.
+# Low-frequency bands (most speech energy) are placed in the center;
+# high-frequency bands (less energy) on the edges — creates a symmetric hill.
+_BAR_FREQ_MAP = [15, 13, 11, 9, 7, 5, 3, 1, 0, 2, 4, 6, 8, 10, 12, 14]
+
+# Module-level audio state (readable by tests and external code)
+_audio_levels  = [0.0] * NUM_BARS   # current per-bar levels, 0..1
+_calib_buf     = []                  # RMS samples collected while calibrating
+_noise_floor   = None                # set after _CALIB_TICKS ticks
+
+
 def parse_color(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
 
-# ── Audio level from WAV file ────────────────────────────────────────────────
-def _wav_rms():
-    """Read the last ~100 ms of the WAV pw-record is writing and return 0..1."""
+
+# ── Audio analysis ───────────────────────────────────────────────────────────
+
+def _wav_levels():
+    """
+    Read the last ~200 ms of the WAV file pw-record is writing.
+
+    Returns a list of NUM_BARS floats in [0, 1]: one per log-spaced frequency
+    band.  The first _CALIB_TICKS calls measure ambient noise so the display
+    automatically adapts to the user's microphone sensitivity.
+
+    Also updates the module-level _audio_levels list so external code and
+    tests can inspect the current state without holding a reference to the
+    WhisperIndicator instance.
+    """
+    global _audio_levels, _calib_buf, _noise_floor
+
     try:
         with open(WAV_FILE, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
             if size <= WAV_HEADER:
-                return 0.0
-            # 100 ms @ 16 kHz s16 mono = 1600 bytes
-            chunk = min(1600, size - WAV_HEADER)
-            f.seek(size - chunk)
-            data = f.read(chunk)
-        n = len(data) // 2
-        if n == 0:
-            return 0.0
-        samples = struct.unpack_from(f"<{n}h", data)
-        rms = math.sqrt(sum(s * s for s in samples) / n) / 32768.0
-        floor = 0.02
-        if rms < floor:
-            return 0.0
-        return min(1.0, (rms - floor) * 1.5)
+                return [0.0] * NUM_BARS
+            n_bytes = min(_CHUNK_SAMPLES * 2, size - WAV_HEADER)
+            f.seek(size - n_bytes)
+            raw = f.read(n_bytes)
     except OSError:
-        return 0.0
+        return [0.0] * NUM_BARS
+
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    n = len(samples)
+    if n < 64:
+        return [0.0] * NUM_BARS
+
+    overall_rms = float(np.sqrt(np.mean(samples ** 2)))
+
+    # Calibration: accumulate ambient RMS during the first 500 ms of recording
+    if _noise_floor is None:
+        _calib_buf.append(overall_rms)
+        if len(_calib_buf) >= _CALIB_TICKS:
+            # 90th percentile is robust to a brief voice onset at the start
+            _noise_floor = float(np.percentile(_calib_buf, 90))
+        _audio_levels = [0.0] * NUM_BARS
+        return _audio_levels
+
+    # Adaptive gain: maps typical speech (~5× noise floor) to ~0.5 bar height
+    gain = min(8.0, 0.5 / max(_noise_floor, 0.003))
+
+    # Overall energy above the calibrated floor — drives all bars together
+    base = max(0.0, min(1.0, (overall_rms - _noise_floor) * gain))
+
+    # FFT frequency analysis — shapes the per-bar variation
+    win      = np.hanning(n)
+    spectrum = np.abs(np.fft.rfft(samples * win)) * (2.0 / n)
+    freqs    = np.fft.rfftfreq(n, d=1.0 / _SAMPLE_RATE)
+
+    edges    = np.logspace(np.log10(_FREQ_MIN), np.log10(_FREQ_MAX), NUM_BARS + 1)
+    band_mag = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        mask = (freqs >= lo) & (freqs < hi)
+        band_mag.append(float(np.mean(spectrum[mask])) if mask.any() else 0.0)
+
+    # Normalise FFT shape to [0, 1] relative to the loudest band
+    mx = max(band_mag) if max(band_mag) > 0 else 1.0
+    fft_shape = [v / mx for v in band_mag]
+
+    # Hybrid level: base energy × per-bar FFT shape, reordered so low-freq
+    # bands (most speech energy) appear in the center of the display.
+    levels = [base * (0.3 + 0.7 * fft_shape[_BAR_FREQ_MAP[i]]) for i in range(NUM_BARS)]
+
+    _audio_levels = levels
+    return levels
+
+
+def _reset_calibration():
+    """Reset auto-calibration state (called when a new recording starts)."""
+    global _calib_buf, _noise_floor, _audio_levels
+    _calib_buf    = []
+    _noise_floor  = None
+    _audio_levels = [0.0] * NUM_BARS
 
 
 # ── GTK4 Application ─────────────────────────────────────────────────────────
 class WhisperIndicator(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="io.github.pablosalasd2004.WhisperHUD")
-        self._state        = "recording"
-        self._bars         = [MIN_BAR_HEIGHT / MAX_BAR_HEIGHT] * NUM_BARS
-        self._phase        = 0.0   # para animación suave en modo transcribing
-        self.win           = None
+        _reset_calibration()
+        self._state  = "recording"
+        self._bars   = [MIN_BAR_HEIGHT / MAX_BAR_HEIGHT] * NUM_BARS
+        self._phase  = 0.0
+        self.win     = None
 
     # -- lifecycle --
     def do_activate(self):
@@ -97,7 +173,6 @@ class WhisperIndicator(Gtk.Application):
             Gtk.STYLE_PROVIDER_PRIORITY_USER
         )
 
-        # DrawingArea ocupa toda la ventana
         da = Gtk.DrawingArea()
         da.set_content_width(WINDOW_WIDTH)
         da.set_content_height(WINDOW_HEIGHT)
@@ -107,55 +182,48 @@ class WhisperIndicator(Gtk.Application):
         self._da = da
         self.win.set_child(da)
 
-        # ESC cancela grabación
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self._on_key)
         self.win.add_controller(key_ctrl)
 
         self.win.present()
 
-        # Timers
         GLib.timeout_add(UPDATE_INTERVAL_MS, self._tick_animation)
         GLib.timeout_add(UPDATE_INTERVAL_MS, self._tick_state)
 
     # -- drawing --
     def _on_draw(self, da, cr, w, h, user_data):
-        # Clear to transparent first
         cr.set_operator(cairo.OPERATOR_SOURCE)
         cr.set_source_rgba(0, 0, 0, 0)
         cr.paint()
         cr.set_operator(cairo.OPERATOR_OVER)
 
-        # Solid background — Hyprland clipea las esquinas
         r, g, b = parse_color(BG_COLOR)
         cr.set_source_rgb(r, g, b)
         cr.paint()
 
-        # Color de acento según estado
         if self._state == "transcribing":
             accent = parse_color(ACCENT_TRANSCRIBING)
         else:
             accent = parse_color(ACCENT_RECORDING)
 
-        # Barras del ecualizador — centradas horizontalmente
-        PAD = 14  # padding a cada lado
+        PAD       = 14
         available = w - 2 * PAD
-        bar_w = max(3, available // NUM_BARS - BAR_GAP)
-        total_w = NUM_BARS * (bar_w + BAR_GAP) - BAR_GAP
-        x_start = (w - total_w) / 2.0  # centrado
+        bar_w     = max(3, available // NUM_BARS - BAR_GAP)
+        total_w   = NUM_BARS * (bar_w + BAR_GAP) - BAR_GAP
+        x_start   = (w - total_w) / 2.0
 
         for i, level in enumerate(self._bars):
             bar_h = max(MIN_BAR_HEIGHT, level * MAX_BAR_HEIGHT)
-            x = x_start + i * (bar_w + BAR_GAP)
-            y = (h - bar_h) / 2.0
+            x     = x_start + i * (bar_w + BAR_GAP)
+            y     = (h - bar_h) / 2.0
 
             cr.set_source_rgba(*accent, 0.9)
-            # Barras redondeadas
             bx, by, bw, bh = x, y, bar_w, bar_h
             if bh > bw:
                 cr.new_sub_path()
-                cr.arc(bx + bw/2, by + bw/2,      bw/2,  math.pi, 0)
-                cr.arc(bx + bw/2, by + bh - bw/2, bw/2,  0,       math.pi)
+                cr.arc(bx + bw/2, by + bw/2,      bw/2, math.pi, 0)
+                cr.arc(bx + bw/2, by + bh - bw/2, bw/2, 0,       math.pi)
                 cr.close_path()
             else:
                 cr.rectangle(bx, by, bw, bh)
@@ -164,18 +232,19 @@ class WhisperIndicator(Gtk.Application):
     # -- animation tick --
     def _tick_animation(self):
         if self._state == "recording":
-            level = _wav_rms()
-            for i in range(NUM_BARS):
-                if level > self._bars[i]:
-                    self._bars[i] = self._bars[i] * 0.3 + level * 0.7  # fast attack
+            targets = _wav_levels()
+            for i, target in enumerate(targets):
+                if target > self._bars[i]:
+                    self._bars[i] = self._bars[i] * 0.3 + target * 0.7   # fast attack
                 else:
-                    self._bars[i] = self._bars[i] * 0.2 + level * 0.8  # fast decay
+                    self._bars[i] = self._bars[i] * 0.7 + target * 0.3   # smooth decay
+
         elif self._state == "transcribing":
-            # Animación suave estilo "idle"
             self._phase += 0.08
             for i in range(NUM_BARS):
                 base = 0.15 + 0.10 * math.sin(self._phase + i * 0.4)
                 self._bars[i] = max(MIN_BAR_HEIGHT / MAX_BAR_HEIGHT, base)
+
         else:
             for i in range(NUM_BARS):
                 self._bars[i] = MIN_BAR_HEIGHT / MAX_BAR_HEIGHT
@@ -183,7 +252,7 @@ class WhisperIndicator(Gtk.Application):
         if self._da:
             self._da.queue_draw()
 
-        return True   # mantener el timer vivo
+        return True
 
     # -- state poll --
     def _tick_state(self):
@@ -202,7 +271,7 @@ class WhisperIndicator(Gtk.Application):
             if self._da:
                 self._da.queue_draw()
 
-        return True   # mantener el timer vivo
+        return True
 
     # -- ESC key: cancel recording --
     def _on_key(self, ctrl, keyval, keycode, state):
@@ -213,7 +282,7 @@ class WhisperIndicator(Gtk.Application):
 
     def _cancel(self):
         import subprocess
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir  = os.path.dirname(os.path.abspath(__file__))
         cancel_script = os.path.join(script_dir, "cancel.sh")
         subprocess.Popen(
             ["bash", cancel_script],
