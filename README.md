@@ -57,21 +57,17 @@ git clone https://github.com/pablosalasd2004/whisper-project ~/.whisper
 ### 2. Install system dependencies
 
 ```bash
-# Arch Linux / CachyOS / Manjaro
+# Arch Linux / CachyOS / Manjaro — covers everything including Python packages
 sudo pacman -S python-gobject python-numpy python-cairo wl-clipboard wtype cmake base-devel
 
-# For Vulkan GPU support (recommended if you have a dedicated/integrated GPU)
+# Add these if you want Vulkan GPU acceleration (recommended if you have any GPU)
 sudo pacman -S vulkan-headers vulkan-icd-loader spirv-headers
 ```
 
-### 3. Install Python dependencies
+> **Other distributions:** install the equivalent packages for your distro, then
+> `pip install -r ~/.whisper/requirements.txt` for the Python dependencies.
 
-```bash
-pip install -r ~/.whisper/requirements.txt
-# or: pip install PyGObject numpy pycairo
-```
-
-### 4. Build whisper.cpp
+### 3. Build whisper.cpp
 
 ```bash
 git clone https://github.com/ggerganov/whisper.cpp ~/.whisper/whisper.cpp
@@ -85,7 +81,7 @@ cmake -B build
 cmake --build build --config Release -j$(nproc)
 ```
 
-### 5. Download a model
+### 4. Download a model
 
 ```bash
 cd ~/.whisper/whisper.cpp
@@ -101,7 +97,7 @@ bash models/download-ggml-model.sh small
 | `large-v3-turbo` | 1.6 GB | Medium | Excellent |
 | `large-v3` | 3.1 GB | Slow | Excellent |
 
-### 6. Configure the keybinding in Hyprland
+### 5. Configure the keybinding in Hyprland
 
 **Standard `.conf` format** (works in any Hyprland setup):
 
