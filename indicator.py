@@ -15,9 +15,9 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib, Gdk
 
 import cairo
-import threading
 import math
 import os
+import struct
 import sys
 
 # ---------------------------------------------------------------------------
@@ -37,48 +37,38 @@ WINDOW_WIDTH          = 220
 WINDOW_HEIGHT         = 44
 # ---------------------------------------------------------------------------
 
-STATE_FILE    = "/tmp/whisper-state"
+STATE_FILE = "/tmp/whisper-state"
+WAV_FILE   = "/tmp/whisper-recording.wav"
+WAV_HEADER = 44   # bytes, standard RIFF WAV header
 
 def parse_color(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
 
-# ── Audio capture ────────────────────────────────────────────────────────────
-_audio_levels = [0.0] * NUM_BARS   # shared between audio thread and draw
-_audio_lock   = threading.Lock()
-
-def _start_audio_capture():
-    """Hilo daemon que captura RMS del micrófono en tiempo real."""
+# ── Audio level from WAV file ────────────────────────────────────────────────
+def _wav_rms():
+    """Read the last ~100 ms of the WAV pw-record is writing and return 0..1."""
     try:
-        import sounddevice as sd
-        import numpy as np
-
-        CHUNK = 1024
-
-        def callback(indata, frames, time_info, status):
-            rms = float(np.sqrt(np.mean(indata ** 2)))
-            # Normalise: típicamente 0..0.1 → 0..1
-            level = min(1.0, rms * 14.0)
-            with _audio_lock:
-                # desplazar barras para efecto "waterfall" suave
-                for i in range(NUM_BARS - 1):
-                    _audio_levels[i] = _audio_levels[i + 1] * 0.85
-                _audio_levels[NUM_BARS - 1] = level
-
-        stream = sd.InputStream(
-            channels=1,
-            samplerate=16000,
-            blocksize=CHUNK,
-            dtype="float32",
-            callback=callback,
-        )
-        stream.start()
-        # Bloquea el hilo indefinidamente; el proceso principal lo terminará
-        import time
-        while True:
-            time.sleep(1)
-    except Exception:
-        pass   # Si sounddevice falla, simplemente no hay animación real
+        with open(WAV_FILE, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size <= WAV_HEADER:
+                return 0.0
+            # 100 ms @ 16 kHz s16 mono = 1600 bytes
+            chunk = min(1600, size - WAV_HEADER)
+            f.seek(size - chunk)
+            data = f.read(chunk)
+        n = len(data) // 2
+        if n == 0:
+            return 0.0
+        samples = struct.unpack_from(f"<{n}h", data)
+        rms = math.sqrt(sum(s * s for s in samples) / n) / 32768.0
+        floor = 0.02
+        if rms < floor:
+            return 0.0
+        return min(1.0, (rms - floor) * 1.5)
+    except OSError:
+        return 0.0
 
 
 # ── GTK4 Application ─────────────────────────────────────────────────────────
@@ -105,9 +95,6 @@ class WhisperIndicator(Gtk.Application):
             self.win.get_display(),
             provider,
             Gtk.STYLE_PROVIDER_PRIORITY_USER
-        )
-        self.win.get_style_context().add_provider(
-            provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
         )
 
         # DrawingArea ocupa toda la ventana
@@ -177,10 +164,12 @@ class WhisperIndicator(Gtk.Application):
     # -- animation tick --
     def _tick_animation(self):
         if self._state == "recording":
-            # Copiar niveles reales del audio
-            with _audio_lock:
-                for i in range(NUM_BARS):
-                    self._bars[i] = _audio_levels[i]
+            level = _wav_rms()
+            for i in range(NUM_BARS):
+                if level > self._bars[i]:
+                    self._bars[i] = self._bars[i] * 0.3 + level * 0.7  # fast attack
+                else:
+                    self._bars[i] = self._bars[i] * 0.2 + level * 0.8  # fast decay
         elif self._state == "transcribing":
             # Animación suave estilo "idle"
             self._phase += 0.08
@@ -236,9 +225,5 @@ class WhisperIndicator(Gtk.Application):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Lanzar captura de audio en hilo daemon
-    t = threading.Thread(target=_start_audio_capture, daemon=True)
-    t.start()
-
     app = WhisperIndicator()
     sys.exit(app.run(None))
