@@ -1,116 +1,91 @@
 # Whisper HUD
 
-Herramienta de voz a texto para escritorios Hyprland/Wayland. Presiona `SUPER+R` para empezar a grabar y vuelve a presionarlo para transcribir: el texto resultante se escribe directamente en la ventana activa y se copia al portapapeles.
+A voice-to-text tool for **Hyprland / Wayland** desktops. Press a keybinding to start recording, press it again to transcribe — the resulting text is typed directly into the focused window and copied to the clipboard.
 
-## Cómo funciona
+Transcription runs locally via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (no API, no cloud, no data leaves your machine).
+
+## How it works
 
 ```
-SUPER+R (primera pulsación)
+SUPER+R (first press)
   └─► transcribe.sh
-        ├─ inicia pw-record  →  graba audio en /tmp/whisper-recording.wav
-        └─ lanza indicator.py  →  HUD flotante con barras animadas (cyan)
+        ├─ starts pw-record  →  records audio to /tmp/whisper-recording.wav
+        └─ launches indicator.py  →  GTK4 floating HUD with animated bars (cyan)
 
-SUPER+R (segunda pulsación)
+SUPER+R (second press)
   └─► transcribe.sh
-        ├─ detiene pw-record
-        ├─ ejecuta whisper-cli  →  HUD en amarillo mientras procesa
-        ├─ copia el resultado con wl-copy
-        └─ escribe el texto con wtype
+        ├─ stops pw-record
+        ├─ runs whisper-cli  →  HUD turns yellow while processing
+        ├─ copies result with wl-copy
+        └─ types text with wtype
 ```
 
-Presionar **ESC** mientras el HUD está visible cancela la grabación sin transcribir.
+Press **ESC** while the HUD is visible to cancel recording without transcribing.
 
-## Requisitos
+## Requirements
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (compilado en `whisper.cpp/build/bin/whisper-cli`)
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) compiled with `whisper-cli` binary
 - PipeWire (`pw-record`)
-- `wl-copy` (paquete `wl-clipboard`)
+- `wl-copy` (package `wl-clipboard`)
 - `wtype`
-- Python 3 con los paquetes: `PyGObject` (GTK4), `sounddevice`, `numpy`, `pycairo`
+- Python 3 packages: `PyGObject` (GTK4), `sounddevice`, `numpy`, `pycairo`
 
-## Instalación
+## Installation
 
-### 1. Compilar whisper.cpp
+### 1. Build whisper.cpp
 
 ```bash
+git clone https://github.com/ggerganov/whisper.cpp ~/.whisper/whisper.cpp
 cd ~/.whisper/whisper.cpp
-cmake -B build -DGGML_VULKAN=1
+cmake -B build -DGGML_VULKAN=1   # remove -DGGML_VULKAN=1 if you don't have a Vulkan GPU
 cmake --build build --config Release -j$(nproc)
 ```
 
-### 2. Descargar un modelo
+### 2. Download a model
 
 ```bash
 cd ~/.whisper/whisper.cpp
 bash models/download-ggml-model.sh large-v3-turbo
 ```
 
-| Modelo | Tamaño | Velocidad | Precisión |
-|--------|--------|-----------|-----------|
-| `tiny` | 75 MB | Muy rápida | Básica |
-| `base` | 142 MB | Rápida | Buena |
-| `small` | 466 MB | Media | Buena |
-| `medium` | 1.5 GB | Lenta | Muy buena |
-| `large-v3-turbo` | 1.6 GB | Media | Excelente |
-| `large-v3` | 3.1 GB | Lenta | Excelente |
+| Model | Size | Speed | Quality |
+|-------|------|-------|---------|
+| `tiny` | 75 MB | Very fast | Basic |
+| `base` | 142 MB | Fast | Good |
+| `small` | 466 MB | Medium | Good |
+| `medium` | 1.5 GB | Slow | Very good |
+| `large-v3-turbo` | 1.6 GB | Medium | Excellent |
+| `large-v3` | 3.1 GB | Slow | Excellent |
 
-### 3. Instalar dependencias de Python
+### 3. Install Python dependencies
 
 ```bash
-# Arch Linux
+# Arch Linux / CachyOS / Manjaro
 sudo pacman -S python-gobject python-sounddevice python-numpy python-cairo
 
 # pip
 pip install PyGObject sounddevice numpy pycairo
 ```
 
-### 4. Configurar el keybinding en Hyprland
-
-Añade a `~/.config/hypr/bindings.lua`:
-
-```lua
-hl.bind("SUPER + R", hl.dsp.exec_cmd("bash " .. os.getenv("HOME") .. "/.whisper/transcribe.sh"), { description = "Whisper: grabar/transcribir voz" })
-```
-
-Aplica los cambios con `hyprctl reload`.
-
-## Archivos
-
-| Archivo | Descripción |
-|---------|-------------|
-| `transcribe.sh` | Script principal: alterna entre iniciar grabación y transcribir |
-| `indicator.py` | HUD flotante GTK4 con ecualizador animado |
-| `cancel.sh` | Cancela la grabación activa y limpia archivos temporales |
-
-## Personalización
-
-### Cambiar el modelo
-
-Edita la variable `MODEL` en `transcribe.sh`:
+### 4. Place the scripts
 
 ```bash
-MODEL="$HOME/.whisper/whisper.cpp/models/ggml-large-v3.bin"
+git clone https://github.com/pablosalasd2004/whisper-project ~/.whisper
 ```
 
-### Cambiar el aspecto del HUD
+The scripts expect to live in `~/.whisper/`.
 
-Edita las constantes al inicio de `indicator.py`:
+### 5. Configure the keybinding in Hyprland
 
-| Variable | Por defecto | Descripción |
-|----------|-------------|-------------|
-| `BG_COLOR` | `#0a1220` | Color de fondo |
-| `ACCENT_RECORDING` | `#78dce8` | Color de barras al grabar |
-| `ACCENT_TRANSCRIBING` | `#f2c063` | Color de barras al transcribir |
-| `NUM_BARS` | `16` | Número de barras del ecualizador |
-| `MAX_BAR_HEIGHT` | `28` | Altura máxima de las barras (px) |
-| `WINDOW_WIDTH` | `220` | Ancho de la ventana (px) |
-| `WINDOW_HEIGHT` | `44` | Alto de la ventana (px) |
+Add to `~/.config/hypr/bindings.lua`:
 
-Si cambias `WINDOW_WIDTH` o `WINDOW_HEIGHT`, actualiza también el `size` correspondiente en `~/.config/hypr/hyprland.lua`.
+```lua
+hl.bind("SUPER + R", hl.dsp.exec_cmd("bash " .. os.getenv("HOME") .. "/.whisper/transcribe.sh"), { description = "Whisper: record/transcribe voice" })
+```
 
-### Posición de la ventana
+Apply with `hyprctl reload`.
 
-Edita `~/.config/hypr/hyprland.lua`:
+Also add a window rule so the HUD floats at the bottom center. In `~/.config/hypr/hyprland.lua`:
 
 ```lua
 o.window("whisper-indicator", {
@@ -119,30 +94,66 @@ o.window("whisper-indicator", {
 })
 ```
 
-Aplica con `hyprctl reload`.
+## Files
 
-## Solución de problemas
+| File | Description |
+|------|-------------|
+| `transcribe.sh` | Main toggle script: start recording → transcribe |
+| `indicator.py` | GTK4 floating HUD with animated equalizer |
+| `cancel.sh` | Cancels active recording and cleans up temp files |
 
-**El HUD no aparece**
+## Customization
+
+### Change the model
+
+Edit the `MODEL` variable in `transcribe.sh`:
+
+```bash
+MODEL="$HOME/.whisper/whisper.cpp/models/ggml-large-v3-turbo.bin"
+```
+
+### Change the HUD appearance
+
+Edit the constants at the top of `indicator.py`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BG_COLOR` | `#0a1220` | Background color |
+| `ACCENT_RECORDING` | `#78dce8` | Bar color while recording |
+| `ACCENT_TRANSCRIBING` | `#f2c063` | Bar color while transcribing |
+| `NUM_BARS` | `16` | Number of equalizer bars |
+| `MAX_BAR_HEIGHT` | `28` | Max bar height in px |
+| `WINDOW_WIDTH` | `220` | Window width in px |
+| `WINDOW_HEIGHT` | `44` | Window height in px |
+
+If you change `WINDOW_WIDTH` or `WINDOW_HEIGHT`, update the matching `size` in your Hyprland config too.
+
+## Troubleshooting
+
+**HUD doesn't appear**
 ```bash
 python3 -c "import gi; gi.require_version('Gtk', '4.0'); from gi.repository import Gtk; print('OK')"
 ```
 
-**Las barras no se mueven**
+**Bars don't animate**
 ```bash
 python3 -c "import sounddevice; print('OK')"
-# Si falla: sudo pacman -S python-sounddevice
+# If it fails: sudo pacman -S python-sounddevice
 ```
 
-**whisper-cli no transcribe nada**
+**whisper-cli produces no output**
 ```bash
 ~/.whisper/whisper.cpp/build/bin/whisper-cli --help
 ls -lh ~/.whisper/whisper.cpp/models/
 ```
 
-**Limpiar procesos colgados**
+**Clean up stuck processes**
 ```bash
 kill $(cat /tmp/whisper-recording.pid 2>/dev/null) 2>/dev/null
 kill $(cat /tmp/whisper-indicator.pid 2>/dev/null) 2>/dev/null
 rm -f /tmp/whisper-recording.{pid,wav} /tmp/whisper-state /tmp/whisper-indicator.pid
 ```
+
+## License
+
+MIT
